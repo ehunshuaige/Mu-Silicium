@@ -97,6 +97,10 @@ READ_LOCK_STATUS   = TRUE
   #INF MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
   #INF RuleOverride = ACPITABLE giulia/AcpiTables.inf
 
+  # UniXNU
+  INF UniXNUPkg/Application/UniXNU/UniXNU.inf
+  INF UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
+
   # IORT DT
   INF QcomPkg/Drivers/IortDtDxe/IortDtDxe.inf
 
