@@ -35,15 +35,6 @@
 /* The volume label the payload FAT carries (board.toml [payload] volume). */
 STATIC CONST CHAR8  mVolumeLabel[11] = "RUYIESP    ";
 
-/*
- * Where the Android bootloader may leave the initrd on this SoC: the DDR that
- * the UEFI memory map hands over as reserved Kernel RAM (see MemoryMapLib.c,
- * "Kernel" 0xA8000000 + 0x10000000). The device tree /chosen properties win
- * when they are present and inside this window.
- */
-#define RUYI_SCAN_START  0xA2580000ULL   /* Mix Flip DDR: the 858 MiB block below TZApps */
-#define RUYI_SCAN_END    0xD8000000ULL
-
 #pragma pack(1)
 typedef struct {
   VENDOR_DEVICE_PATH          Vendor;
@@ -214,6 +205,97 @@ ScanRamRange (
   return EFI_NOT_FOUND;
 }
 
+/*
+ * Memory the firmware has not described in its memory map is not necessarily
+ * mapped, so a blind scan of physical DDR faults (data abort, translation
+ * fault). Walk the memory map instead and scan the descriptors: every byte a
+ * descriptor covers is mapped.
+ */
+STATIC
+EFI_STATUS
+ScanMemoryMap (
+  VOID
+  )
+{
+  EFI_STATUS             Status;
+  EFI_MEMORY_DESCRIPTOR  *Map;
+  EFI_MEMORY_DESCRIPTOR  *Entry;
+  UINTN                  Size;
+  UINTN                  Key;
+  UINTN                  DescriptorSize;
+  UINTN                  At;
+  UINT32                 Version;
+  UINT64                 Start;
+  UINT64                 End;
+  UINTN                  Pass;
+
+  Size = 0;
+  Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
+  if (Status != EFI_BUFFER_TOO_SMALL) {
+    return Status;
+  }
+
+  Size += 16 * DescriptorSize;
+  Map = AllocatePool (Size);
+  if (Map == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Status = gBS->GetMemoryMap (&Size, Map, &Key, &DescriptorSize, &Version);
+  if (EFI_ERROR (Status) || (DescriptorSize < sizeof (EFI_MEMORY_DESCRIPTOR))) {
+    FreePool (Map);
+    return EFI_DEVICE_ERROR;
+  }
+
+  /*
+   * Pass 0 looks at reserved memory only (where a bootloader leaves the boot
+   * image), pass 1 at everything else. A large descriptor is more likely to be
+   * the payload than a small one, but keep the order simple.
+   */
+  for (Pass = 0; Pass < 2; Pass++) {
+    for (At = 0; At + DescriptorSize <= Size; At += DescriptorSize) {
+      Entry = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + At);
+      if (Entry->NumberOfPages == 0) {
+        continue;
+      }
+
+      if (Pass == 0) {
+        if (Entry->Type != EfiReservedMemoryType) {
+          continue;
+        }
+      } else {
+        if (Entry->Type == EfiReservedMemoryType) {
+          continue;
+        }
+        /* MMIO and the firmware itself are not candidates. */
+        if ((Entry->Type == EfiMemoryMappedIO) ||
+            (Entry->Type == EfiMemoryMappedIOPortSpace) ||
+            (Entry->Type == EfiPalCode) ||
+            (Entry->Type == EfiUnacceptedMemoryType))
+        {
+          continue;
+        }
+      }
+
+      Start = Entry->PhysicalStart;
+      End   = Start + LShiftU64 (Entry->NumberOfPages, EFI_PAGE_SHIFT);
+      if ((End - Start) < (32ULL * 1024 * 1024)) {
+        continue;
+      }
+
+      DEBUG ((DEBUG_ERROR, "RUYIINITRD: scan 0x%lx-0x%lx type %u\n", Start, End, (UINT32)Entry->Type));
+      Status = ScanRamRange (Start, End);
+      if (!EFI_ERROR (Status)) {
+        FreePool (Map);
+        return Status;
+      }
+    }
+  }
+
+  FreePool (Map);
+  return EFI_NOT_FOUND;
+}
+
 EFI_STATUS
 EFIAPI
 RuyiInitrdDxeEntry (
@@ -223,17 +305,11 @@ RuyiInitrdDxeEntry (
 {
   EFI_STATUS  Status;
 
-  Report (1, RUYI_SCAN_START, RUYI_SCAN_END, EFI_NOT_READY);
+  Report (1, 0, 0, EFI_NOT_READY);
 
-  /*
-   * Scan the DDR the bootloader can put the boot image in for the FAT32 volume
-   * labelled RUYIESP (board.toml [payload] volume). Upstream Mu-Silicium does
-   * not pass the initrd address through to DXE (uefi-sheng adds an entry-args
-   * HOB for that), so the volume is found by its boot sector instead.
-   */
-  Status = ScanRamRange (RUYI_SCAN_START, RUYI_SCAN_END);
+  Status = ScanMemoryMap ();
   if (EFI_ERROR (Status)) {
-    Report (17, RUYI_SCAN_START, RUYI_SCAN_END, Status);
+    Report (17, 0, 0, Status);
   }
 
   /*
