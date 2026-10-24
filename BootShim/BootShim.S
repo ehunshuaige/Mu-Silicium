@@ -17,6 +17,11 @@ _StackSize:
 #endif
 
 _Start:
+  /* The bootloader passes the device tree in x0 (arm64 Linux boot protocol).
+     Stash it in the FD-reserved page just below the firmware volume so DXE can
+     read /chosen and find the ramdisk the bootloader loaded for us. */
+  ldr   x9, =FD_BASE - 0x10
+  str   x0, [x9]
   mov   x4, x1
   ldr   x5, =FD_BASE
   cmp   x4, x5
