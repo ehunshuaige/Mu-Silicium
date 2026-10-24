@@ -25,6 +25,7 @@
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/FdtLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
@@ -34,6 +35,13 @@
 
 #define RAM_BLOCK_SIZE     512
 #define MIN_BANK_BYTES     (32ULL * 1024 * 1024)
+
+/*
+ * BootShim stores the device tree pointer the bootloader passed in x0 at
+ * FD_BASE - 0x10, inside the FD-reserved page of the memory map. Reading the
+ * device tree gives the exact ramdisk range from /chosen instead of guessing.
+ */
+#define DTB_SLOT           (0x0A7100000ULL - 0x10)
 
 /* The volume label the payload FAT carries (board.toml [payload] volume). */
 STATIC CONST CHAR8  mVolumeLabel[11] = "RUYIESP    ";
@@ -229,12 +237,83 @@ ScanRamRange (
   return EFI_NOT_FOUND;
 }
 
+STATIC
+UINT64
+ReadAddress (
+  IN CONST VOID  *Property,
+  IN INT32        Length
+  )
+{
+  if (Length == 8) {
+    return Fdt64ToCpu (ReadUnaligned64 ((CONST UINT64 *)Property));
+  }
+  return Fdt32ToCpu (ReadUnaligned32 ((CONST UINT32 *)Property));
+}
+
+/*
+ * The exact answer when it exists: the bootloader patches /chosen with the
+ * address of the ramdisk it loaded, and BootShim kept the device tree pointer.
+ */
+STATIC
+EFI_STATUS
+ScanFromDeviceTree (
+  VOID
+  )
+{
+  CONST VOID  *Fdt;
+  CONST VOID  *StartProp;
+  CONST VOID  *EndProp;
+  INT32        Chosen;
+  INT32        StartLength;
+  INT32        EndLength;
+  UINT64       Dtb;
+  UINT64       Start;
+  UINT64       End;
+
+  Dtb = ReadUnaligned64 ((CONST UINT64 *)(UINTN)DTB_SLOT);
+  if ((Dtb == 0) || ((Dtb & 3) != 0)) {
+    DEBUG ((DEBUG_ERROR, "RUYIINTRD: no device tree at the shim slot (0x%lx)\n", Dtb));
+    return EFI_NOT_FOUND;
+  }
+
+  Fdt = (CONST VOID *)(UINTN)Dtb;
+  if (FdtCheckHeader (Fdt) != 0) {
+    DEBUG ((DEBUG_ERROR, "RUYIINTRD: bad device tree header at 0x%lx\n", Dtb));
+    return EFI_NOT_FOUND;
+  }
+
+  Chosen = FdtPathOffset (Fdt, "/chosen");
+  if (Chosen < 0) {
+    DEBUG ((DEBUG_ERROR, "RUYIINTRD: device tree 0x%lx has no /chosen\n", Dtb));
+    return EFI_NOT_FOUND;
+  }
+
+  StartProp = FdtGetProp (Fdt, Chosen, "linux,initrd-start", &StartLength);
+  EndProp   = FdtGetProp (Fdt, Chosen, "linux,initrd-end", &EndLength);
+  if ((StartProp == NULL) || (EndProp == NULL) ||
+      ((StartLength != 4) && (StartLength != 8)) ||
+      ((EndLength != 4) && (EndLength != 8)))
+  {
+    DEBUG ((DEBUG_ERROR, "RUYIINTRD: no initrd range in /chosen of 0x%lx\n", Dtb));
+    return EFI_NOT_FOUND;
+  }
+
+  Start = ReadAddress (StartProp, StartLength);
+  End   = ReadAddress (EndProp, EndLength);
+  DEBUG ((DEBUG_ERROR, "RUYIINTRD: /chosen initrd 0x%lx-0x%lx\n", Start, End));
+
+  if ((End <= Start) || ((End - Start) < RAM_BLOCK_SIZE)) {
+    return EFI_NOT_FOUND;
+  }
+
+  return ScanRamRange (Start, End);
+}
+
 /*
  * Scan every (device-tree DDR bank  x  UEFI memory-map descriptor) intersection.
  * Both conditions are needed: the map says the range is mapped, the bank says it
  * is DDR rather than device space.
- */
-STATIC
+ */STATIC
 EFI_STATUS
 ScanBanks (
   IN EFI_MEMORY_DESCRIPTOR  *Map,
@@ -299,6 +378,12 @@ RuyiInitrdDxeEntry (
   UINT32                 Version;
 
   Report (1, 0, 0, EFI_NOT_READY);
+
+  /* The exact range from the device tree, when the bootloader filled it in. */
+  Status = ScanFromDeviceTree ();
+  if (!EFI_ERROR (Status)) {
+    return EFI_SUCCESS;
+  }
 
   Size = 0;
   Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
