@@ -108,5 +108,8 @@
   INF Binaries/giulia/QcomPkg/Drivers/PILDxe/PILDxe.inf
   INF Binaries/giulia/QcomPkg/Drivers/PILProxyDxe/PILProxyDxe.inf
 
+  # ruyi: publish the boot image's RUYIESP payload volume as a Block I/O device
+  INF ruyiPkg/Drivers/RuyiInitrdDxe/RuyiInitrdDxe.inf
+
   # UniXNU: boots the payload (DarwinBoot reads the RUYIESP volume from the boot image ramdisk)
   INF DarwinBootPkg/Driver/DarwinBoot.inf
