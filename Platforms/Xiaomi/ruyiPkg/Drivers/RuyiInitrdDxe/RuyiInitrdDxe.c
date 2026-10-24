@@ -106,6 +106,18 @@ Report (
   }
 }
 
+/* Print a line and keep it on screen: there is no serial port on this board. */
+STATIC
+VOID
+ShowFor (
+  IN UINTN  Seconds
+  )
+{
+  if ((Seconds != 0) && (gBS != NULL)) {
+    gBS->Stall ((UINTN)Seconds * 1000U * 1000U);
+  }
+}
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -377,6 +389,8 @@ RuyiInitrdDxeEntry (
   UINTN                  DescriptorSize;
   UINT32                 Version;
 
+  DEBUG ((DEBUG_ERROR, "RUYIINTRD: RuyiInitrdDxe start, DTB slot 0x%lx holds 0x%lx\n",
+          (UINT64)DTB_SLOT, ReadUnaligned64 ((CONST UINT64 *)(UINTN)DTB_SLOT)));
   Report (1, 0, 0, EFI_NOT_READY);
 
   /* The exact range from the device tree, when the bootloader filled it in. */
@@ -406,11 +420,14 @@ RuyiInitrdDxeEntry (
     return EFI_SUCCESS;
   }
 
+  DEBUG ((DEBUG_ERROR, "RUYIINTRD: falling back to the memory map x DTB banks scan\n"));
   Status = ScanBanks (Map, Size, DescriptorSize);
   FreePool (Map);
 
   if (EFI_ERROR (Status)) {
     Report (17, 0, 0, Status);
+    DEBUG ((DEBUG_ERROR, "RUYIINTRD: payload not found -- holding this log for 20 s\n"));
+    ShowFor (20);
   }
 
   /*
