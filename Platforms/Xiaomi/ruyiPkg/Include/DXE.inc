@@ -107,3 +107,6 @@
   INF Binaries/giulia/QcomPkg/Drivers/RNGDxe/RngDxe.inf
   INF Binaries/giulia/QcomPkg/Drivers/PILDxe/PILDxe.inf
   INF Binaries/giulia/QcomPkg/Drivers/PILProxyDxe/PILProxyDxe.inf
+
+  # UniXNU: boots the payload (DarwinBoot reads the RUYIESP volume from the boot image ramdisk)
+  INF DarwinBootPkg/Driver/DarwinBoot.inf
