@@ -41,8 +41,8 @@ STATIC CONST CHAR8  mVolumeLabel[11] = "RUYIESP    ";
  * "Kernel" 0xA8000000 + 0x10000000). The device tree /chosen properties win
  * when they are present and inside this window.
  */
-#define SCAN_START  0xA2580000ULL   /* Mix Flip DDR: the 858 MiB block below TZApps */
-#define SCAN_END    0xD8000000ULL
+#define RUYI_SCAN_START  0xA2580000ULL   /* Mix Flip DDR: the 858 MiB block below TZApps */
+#define RUYI_SCAN_END    0xD8000000ULL
 
 #pragma pack(1)
 typedef struct {
@@ -223,7 +223,7 @@ RuyiInitrdDxeEntry (
 {
   EFI_STATUS  Status;
 
-  Report (1, SCAN_START, SCAN_END, EFI_NOT_READY);
+  Report (1, RUYI_SCAN_START, RUYI_SCAN_END, EFI_NOT_READY);
 
   /*
    * Scan the DDR the bootloader can put the boot image in for the FAT32 volume
@@ -231,9 +231,9 @@ RuyiInitrdDxeEntry (
    * not pass the initrd address through to DXE (uefi-sheng adds an entry-args
    * HOB for that), so the volume is found by its boot sector instead.
    */
-  Status = ScanRamRange (SCAN_START, SCAN_END);
+  Status = ScanRamRange (RUYI_SCAN_START, RUYI_SCAN_END);
   if (EFI_ERROR (Status)) {
-    Report (17, SCAN_START, SCAN_END, Status);
+    Report (17, RUYI_SCAN_START, RUYI_SCAN_END, Status);
   }
 
   /*
