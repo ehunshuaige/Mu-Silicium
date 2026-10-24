@@ -1,21 +1,23 @@
 /** @file
-  Read-only RUYIESP FAT payload from the Android bootloader initrd.
+  Read-only RUYIESP FAT payload that the Android bootloader leaves in the
+  boot image ramdisk.
 
   Ported from UniXNU-OnePlus-Ace5's GiuliaInitrdDxe (BSD-2-Clause-Patent). The
-  structure is the same: take the device-tree pointer the Silicium entry args
-  hand over, read /chosen/linux,initrd-start and -end, and publish that memory
-  as a read-only Block I/O device so PartitionDxe/Fat can mount the FAT volume
-  UniXNU loads its configuration from.
+  structure is the same: find the ramdisk, publish it as a read-only Block I/O
+  device, and let PartitionDxe/Fat mount the FAT volume UniXNU loads its
+  configuration from.
 
-  Differences from the giulia driver, for the first bring-up on ruyi:
-    - no payload size/CRC identity: any FAT32 volume labelled RUYIESP inside the
-      accepted window is taken (the CRC check needs PayloadIdentity.h generated
-      from the built payload, which this board does not generate yet);
-    - no board hardware hooks (touch, hall, Wi-Fi, GPU) -- those belong to the
-      board drivers, not here;
-    - the accepted window is the DDR the bootloader can put the ramdisk in,
-      judged from the device tree memory nodes, with the Kernel reservation of
-      the UEFI memory map as the fallback scan.
+  Two rules keep the scan from faulting, both learned on the device:
+
+    1. Only scan memory the UEFI memory map describes. DDR that is not in the
+       map is not mapped, and reading it is a translation fault (data abort).
+    2. Only scan inside the DDR banks the device tree declares. The memory map
+       can describe ranges past the end of a bank; reading those is a
+       synchronous external abort.
+
+  The banks below are the memory nodes of the phone's device tree (ruyi.dtb,
+  the device_type = "memory" nodes), largest first. Banks smaller than a
+  payload volume are left out.
 
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
@@ -30,10 +32,32 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
 
-#define RAM_BLOCK_SIZE  512
+#define RAM_BLOCK_SIZE     512
+#define MIN_BANK_BYTES     (32ULL * 1024 * 1024)
 
 /* The volume label the payload FAT carries (board.toml [payload] volume). */
 STATIC CONST CHAR8  mVolumeLabel[11] = "RUYIESP    ";
+
+typedef struct {
+  UINT64    Base;
+  UINT64    End;
+} DDR_BANK;
+
+/*
+ * ruyi.dtb memory nodes. The bootloader puts the boot image in the low DDR, so
+ * that bank is scanned first; the high banks follow in case it does not.
+ */
+STATIC CONST DDR_BANK  mScanBanks[] = {
+  { 0x0A2580000ULL, 0x0D8000000ULL },          /* 858 MiB */
+  { 0x0E34B0000ULL, 0x0F7C00000ULL },          /* 327 MiB */
+  { 0x0FB800000ULL, 0x0FF100000ULL },          /* 57 MiB */
+  { 0x082800000ULL, 0x084800000ULL },          /* 32 MiB */
+  { 0x0880000000ULL, 0x08AF900000ULL },        /* 761 MiB */
+  { 0x08B0000000ULL, 0x08B7F00000ULL },        /* 127 MiB */
+  { 0x08B8100000ULL, 0x08B9F00000ULL },        /* 30 MiB */
+  { 0x08C0000000ULL, 0x0980000000ULL },        /* 3 GiB */
+  { 0x0980000000ULL, 0x0B00000000ULL },        /* 6 GiB */
+};
 
 #pragma pack(1)
 typedef struct {
@@ -177,13 +201,13 @@ ScanRamRange (
       continue;
     }
 
-    mRamBase          = Sector;
-    mMedia.MediaId    = 1;
+    mRamBase            = Sector;
+    mMedia.MediaId      = 1;
     mMedia.MediaPresent = TRUE;
-    mMedia.ReadOnly   = TRUE;
-    mMedia.BlockSize  = RAM_BLOCK_SIZE;
-    mMedia.IoAlign    = 1;
-    mMedia.LastBlock  = Bytes / RAM_BLOCK_SIZE - 1;
+    mMedia.ReadOnly     = TRUE;
+    mMedia.BlockSize    = RAM_BLOCK_SIZE;
+    mMedia.IoAlign      = 1;
+    mMedia.LastBlock    = Bytes / RAM_BLOCK_SIZE - 1;
 
     mBlockIo.Revision    = EFI_BLOCK_IO_PROTOCOL_REVISION;
     mBlockIo.Media       = &mMedia;
@@ -206,93 +230,57 @@ ScanRamRange (
 }
 
 /*
- * Memory the firmware has not described in its memory map is not necessarily
- * mapped, so a blind scan of physical DDR faults (data abort, translation
- * fault). Walk the memory map instead and scan the descriptors: every byte a
- * descriptor covers is mapped.
+ * Scan every (device-tree DDR bank  x  UEFI memory-map descriptor) intersection.
+ * Both conditions are needed: the map says the range is mapped, the bank says it
+ * is DDR rather than device space.
  */
 STATIC
 EFI_STATUS
-ScanMemoryMap (
-  VOID
+ScanBanks (
+  IN EFI_MEMORY_DESCRIPTOR  *Map,
+  IN UINTN                   Size,
+  IN UINTN                   DescriptorSize
   )
 {
-  EFI_STATUS             Status;
-  EFI_MEMORY_DESCRIPTOR  *Map;
-  EFI_MEMORY_DESCRIPTOR  *Entry;
-  UINTN                  Size;
-  UINTN                  Key;
-  UINTN                  DescriptorSize;
   UINTN                  At;
-  UINT32                 Version;
+  UINTN                  Bank;
+  EFI_MEMORY_DESCRIPTOR  *Entry;
   UINT64                 Start;
   UINT64                 End;
-  UINTN                  Pass;
+  EFI_STATUS             Status;
 
-  Size = 0;
-  Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
-  if (Status != EFI_BUFFER_TOO_SMALL) {
-    return Status;
-  }
-
-  Size += 16 * DescriptorSize;
-  Map = AllocatePool (Size);
-  if (Map == NULL) {
-    return EFI_OUT_OF_RESOURCES;
-  }
-
-  Status = gBS->GetMemoryMap (&Size, Map, &Key, &DescriptorSize, &Version);
-  if (EFI_ERROR (Status) || (DescriptorSize < sizeof (EFI_MEMORY_DESCRIPTOR))) {
-    FreePool (Map);
-    return EFI_DEVICE_ERROR;
-  }
-
-  /*
-   * Pass 0 looks at reserved memory only (where a bootloader leaves the boot
-   * image), pass 1 at everything else. A large descriptor is more likely to be
-   * the payload than a small one, but keep the order simple.
-   */
-  for (Pass = 0; Pass < 2; Pass++) {
+  for (Bank = 0; Bank < ARRAY_SIZE (mScanBanks); Bank++) {
     for (At = 0; At + DescriptorSize <= Size; At += DescriptorSize) {
       Entry = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + At);
       if (Entry->NumberOfPages == 0) {
         continue;
       }
 
-      if (Pass == 0) {
-        if (Entry->Type != EfiReservedMemoryType) {
-          continue;
-        }
-      } else {
-        if (Entry->Type == EfiReservedMemoryType) {
-          continue;
-        }
-        /* MMIO and the firmware itself are not candidates. */
-        if ((Entry->Type == EfiMemoryMappedIO) ||
-            (Entry->Type == EfiMemoryMappedIOPortSpace) ||
-            (Entry->Type == EfiPalCode) ||
-            (Entry->Type == EfiUnacceptedMemoryType))
-        {
-          continue;
-        }
-      }
-
-      Start = Entry->PhysicalStart;
-      End   = Start + LShiftU64 (Entry->NumberOfPages, EFI_PAGE_SHIFT);
-      if ((End - Start) < (32ULL * 1024 * 1024)) {
+      /* Device space is never a payload. */
+      if ((Entry->Type == EfiMemoryMappedIO) ||
+          (Entry->Type == EfiMemoryMappedIOPortSpace) ||
+          (Entry->Type == EfiPalCode) ||
+          (Entry->Type == EfiUnacceptedMemoryType))
+      {
         continue;
       }
 
-      DEBUG ((DEBUG_ERROR, "RUYIINITRD: scan 0x%lx-0x%lx type %u\n", Start, End, (UINT32)Entry->Type));
+      Start = MAX (Entry->PhysicalStart, mScanBanks[Bank].Base);
+      End   = MIN (Entry->PhysicalStart + LShiftU64 (Entry->NumberOfPages, EFI_PAGE_SHIFT),
+                   mScanBanks[Bank].End);
+      if ((End <= Start) || ((End - Start) < MIN_BANK_BYTES)) {
+        continue;
+      }
+
+      DEBUG ((DEBUG_ERROR, "RUYIINTRD: scan 0x%lx-0x%lx bank %u type %u\n",
+              Start, End, (UINT32)Bank, (UINT32)Entry->Type));
       Status = ScanRamRange (Start, End);
       if (!EFI_ERROR (Status)) {
-        FreePool (Map);
         return Status;
       }
     }
   }
 
-  FreePool (Map);
   return EFI_NOT_FOUND;
 }
 
@@ -303,11 +291,39 @@ RuyiInitrdDxeEntry (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-  EFI_STATUS  Status;
+  EFI_STATUS             Status;
+  EFI_MEMORY_DESCRIPTOR  *Map;
+  UINTN                  Size;
+  UINTN                  Key;
+  UINTN                  DescriptorSize;
+  UINT32                 Version;
 
   Report (1, 0, 0, EFI_NOT_READY);
 
-  Status = ScanMemoryMap ();
+  Size = 0;
+  Status = gBS->GetMemoryMap (&Size, NULL, &Key, &DescriptorSize, &Version);
+  if (Status != EFI_BUFFER_TOO_SMALL) {
+    Report (2, 0, 0, Status);
+    return EFI_SUCCESS;
+  }
+
+  Size += 16 * DescriptorSize;
+  Map = AllocatePool (Size);
+  if (Map == NULL) {
+    Report (3, 0, 0, EFI_OUT_OF_RESOURCES);
+    return EFI_SUCCESS;
+  }
+
+  Status = gBS->GetMemoryMap (&Size, Map, &Key, &DescriptorSize, &Version);
+  if (EFI_ERROR (Status) || (DescriptorSize < sizeof (EFI_MEMORY_DESCRIPTOR))) {
+    FreePool (Map);
+    Report (4, 0, 0, EFI_DEVICE_ERROR);
+    return EFI_SUCCESS;
+  }
+
+  Status = ScanBanks (Map, Size, DescriptorSize);
+  FreePool (Map);
+
   if (EFI_ERROR (Status)) {
     Report (17, 0, 0, Status);
   }
