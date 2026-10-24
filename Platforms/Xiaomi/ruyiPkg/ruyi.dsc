@@ -97,6 +97,7 @@
   UniXNUPkg/Application/UniXNU/UniXNU.inf
   UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf
   DarwinBootPkg/Driver/DarwinBoot.inf
+  ruyiPkg/Drivers/RuyiInitrdDxe/RuyiInitrdDxe.inf
 
   #
   # ACPI Tables
