@@ -1,0 +1,38 @@
+name: Build UEFI for ruyi (Xiaomi MIX Flip)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - 'Platforms/Xiaomi/ruyiPkg/**'
+      - 'Resources/Configs/ruyi.toml'
+      - '.github/workflows/ruyi.yml'
+
+env:
+  CI_BUILD: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Build UEFI for ruyi
+        run: |
+          bash ./setup_env.sh -p apt
+          python3 ./build_uefi.py -d ruyi -r DEBUG -c -m 0
+
+      - name: Upload UEFI image
+        uses: actions/upload-artifact@v7
+        with:
+          name: uefi-ruyi
+          path: |
+            Mu-ruyi*.img
+            Mu-ruyi*.bin
+            Build/ruyiPkg/**/FV/*.fd
+          if-no-files-found: warn
+          compression-level: 9
