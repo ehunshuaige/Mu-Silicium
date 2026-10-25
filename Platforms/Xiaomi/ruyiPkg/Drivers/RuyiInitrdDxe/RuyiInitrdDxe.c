@@ -455,6 +455,11 @@ RuyiInitrdDxeEntry (
           (UINT64)DTB_SLOT, ReadUnaligned64 ((CONST UINT64 *)(UINTN)DTB_SLOT)));
   Report (1, 0, 0, EFI_NOT_READY);
   ReportBlockDevices ();
+  /*
+   * Hold the report on screen: UniXNU's menu repaints over the debug console,
+   * and this board has no serial port to read it afterwards.
+   */
+  gBS->Stall (25 * 1000 * 1000);
 
   /* The exact range from the device tree, when the bootloader filled it in. */
   Status = ScanFromDeviceTree ();
