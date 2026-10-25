@@ -25,6 +25,7 @@
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/DevicePathLib.h>
 #include <Library/FdtLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PrintLib.h>
@@ -182,6 +183,60 @@ RamBlockFlush (
   )
 {
   return EFI_SUCCESS;
+}
+
+/*
+ * Diagnostic: list the block devices the firmware can see. The UFS stack is
+ * the unknown part of this port -- if the partitions below show up with the
+ * sizes the phone's GPT declares, the firmware can be pointed at a payload
+ * flashed to a partition instead of the boot image ramdisk (ABL only accepts a
+ * ~78 MiB ramdisk window).
+ */
+STATIC
+VOID
+ReportBlockDevices (
+  VOID
+  )
+{
+  EFI_STATUS                  Status;
+  EFI_HANDLE                  *Handles;
+  UINTN                       Count;
+  UINTN                       Index;
+  EFI_BLOCK_IO_PROTOCOL       *BlockIo;
+  EFI_DEVICE_PATH_PROTOCOL    *DevicePath;
+  CHAR16                      *Text;
+
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "RUYIBLK: no BlockIo handles (%r)\n", Status));
+    return;
+  }
+
+  DEBUG ((DEBUG_ERROR, "RUYIBLK: %u BlockIo handles\n", (UINT32)Count));
+  for (Index = 0; (Index < Count) && (Index < 24); Index++) {
+    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo))) {
+      continue;
+    }
+
+    Text      = NULL;
+    DevicePath = DevicePathFromHandle (Handles[Index]);
+    if (DevicePath != NULL) {
+      Text = ConvertDevicePathToText (DevicePath, FALSE, FALSE);
+    }
+
+    DEBUG ((DEBUG_ERROR, "RUYIBLK: [%u] %lu x %u B%s%s\n",
+            (UINT32)Index,
+            (UINT64)(BlockIo->Media->LastBlock + 1),
+            (UINT32)BlockIo->Media->BlockSize,
+            (Text != NULL) ? " " : "",
+            (Text != NULL) ? Text : ""));
+
+    if (Text != NULL) {
+      FreePool (Text);
+    }
+  }
+
+  FreePool (Handles);
 }
 
 /* Publish a FAT32 volume labelled RUYIESP found inside [Start, End). */
@@ -392,6 +447,7 @@ RuyiInitrdDxeEntry (
   DEBUG ((DEBUG_ERROR, "RUYIINTRD: RuyiInitrdDxe start, DTB slot 0x%lx holds 0x%lx\n",
           (UINT64)DTB_SLOT, ReadUnaligned64 ((CONST UINT64 *)(UINTN)DTB_SLOT)));
   Report (1, 0, 0, EFI_NOT_READY);
+  ReportBlockDevices ();
 
   /* The exact range from the device tree, when the bootloader filled it in. */
   Status = ScanFromDeviceTree ();
