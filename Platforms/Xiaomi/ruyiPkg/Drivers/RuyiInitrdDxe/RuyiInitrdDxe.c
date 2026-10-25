@@ -185,67 +185,6 @@ RamBlockFlush (
   return EFI_SUCCESS;
 }
 
-/*
- * Diagnostic: list the block devices the firmware can see. The UFS stack is
- * the unknown part of this port -- if the partitions below show up with the
- * sizes the phone's GPT declares, the firmware can be pointed at a payload
- * flashed to a partition instead of the boot image ramdisk (ABL only accepts a
- * ~78 MiB ramdisk window).
- */
-STATIC
-VOID
-ReportBlockDevices (
-  VOID
-  )
-{
-  EFI_STATUS                  Status;
-  EFI_HANDLE                  *Handles;
-  UINTN                       Count;
-  UINTN                       Index;
-  EFI_BLOCK_IO_PROTOCOL       *BlockIo;
-  EFI_DEVICE_PATH_PROTOCOL    *DevicePath;
-  CHAR16                      *Text;
-
-  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "RUYIBLK: no BlockIo handles (%r)\n", Status));
-    return;
-  }
-
-  DEBUG ((DEBUG_ERROR, "RUYIBLK: %u BlockIo handles\n", (UINT32)Count));
-  for (Index = 0; (Index < Count) && (Index < 24); Index++) {
-    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo))) {
-      continue;
-    }
-
-    Text      = NULL;
-    DevicePath = DevicePathFromHandle (Handles[Index]);
-    if (DevicePath != NULL) {
-      Text = ConvertDevicePathToText (DevicePath, FALSE, FALSE);
-    }
-
-    if (Text != NULL) {
-      /* DEBUG's %S takes the CHAR16 string ConvertDevicePathToText returns. */
-      DEBUG ((DEBUG_ERROR, "RUYIBLK: [%u] %lu x %u B %S\n",
-              (UINT32)Index,
-              (UINT64)(BlockIo->Media->LastBlock + 1),
-              (UINT32)BlockIo->Media->BlockSize,
-              Text));
-    } else {
-      DEBUG ((DEBUG_ERROR, "RUYIBLK: [%u] %lu x %u B (no device path)\n",
-              (UINT32)Index,
-              (UINT64)(BlockIo->Media->LastBlock + 1),
-              (UINT32)BlockIo->Media->BlockSize));
-    }
-
-    if (Text != NULL) {
-      FreePool (Text);
-    }
-  }
-
-  FreePool (Handles);
-}
-
 /* Publish a FAT32 volume labelled RUYIESP found inside [Start, End). */
 STATIC
 EFI_STATUS
@@ -454,12 +393,9 @@ RuyiInitrdDxeEntry (
   DEBUG ((DEBUG_ERROR, "RUYIINTRD: RuyiInitrdDxe start, DTB slot 0x%lx holds 0x%lx\n",
           (UINT64)DTB_SLOT, ReadUnaligned64 ((CONST UINT64 *)(UINTN)DTB_SLOT)));
   Report (1, 0, 0, EFI_NOT_READY);
-  ReportBlockDevices ();
-  /*
-   * Hold the report on screen: UniXNU's menu repaints over the debug console,
-   * and this board has no serial port to read it afterwards.
-   */
-  gBS->Stall (25 * 1000 * 1000);
+  /* The BlockIo/UFS survey is done: the firmware reads the phone's GPT
+   * partitions (132 handles, 4096-byte blocks), so a payload flashed to a
+   * partition works. The probe and its screen hold are gone. */
 
   /* The exact range from the device tree, when the bootloader filled it in. */
   Status = ScanFromDeviceTree ();
