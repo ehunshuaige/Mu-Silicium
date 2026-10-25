@@ -224,12 +224,19 @@ ReportBlockDevices (
       Text = ConvertDevicePathToText (DevicePath, FALSE, FALSE);
     }
 
-    DEBUG ((DEBUG_ERROR, "RUYIBLK: [%u] %lu x %u B%s%s\n",
-            (UINT32)Index,
-            (UINT64)(BlockIo->Media->LastBlock + 1),
-            (UINT32)BlockIo->Media->BlockSize,
-            (Text != NULL) ? " " : "",
-            (Text != NULL) ? Text : ""));
+    if (Text != NULL) {
+      /* DEBUG's %S takes the CHAR16 string ConvertDevicePathToText returns. */
+      DEBUG ((DEBUG_ERROR, "RUYIBLK: [%u] %lu x %u B %S\n",
+              (UINT32)Index,
+              (UINT64)(BlockIo->Media->LastBlock + 1),
+              (UINT32)BlockIo->Media->BlockSize,
+              Text));
+    } else {
+      DEBUG ((DEBUG_ERROR, "RUYIBLK: [%u] %lu x %u B (no device path)\n",
+              (UINT32)Index,
+              (UINT64)(BlockIo->Media->LastBlock + 1),
+              (UINT32)BlockIo->Media->BlockSize));
+    }
 
     if (Text != NULL) {
       FreePool (Text);
