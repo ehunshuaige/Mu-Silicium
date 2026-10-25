@@ -22,6 +22,7 @@
   BaseLib
   BaseMemoryLib
   DebugLib
+  DevicePathLib
   FdtLib
   MemoryAllocationLib
   PrintLib
